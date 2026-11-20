@@ -293,7 +293,7 @@ function Flight({ f }) {
   return (
     <div className="absolute left-0 top-0 pointer-events-none z-[60]"
       style={{ transform: `translate(${p.x - w / 2}px, ${p.y - h / 2}px) scale(${go ? 0.85 : 1.15}) rotate(${go ? 0 : -10}deg)`,
-               transition: `transform 900ms cubic-bezier(.4,0,.2,1) ${f.delay}ms`, filter: 'drop-shadow(0 6px 8px rgba(0,0,0,.5))' }}>
+               transition: `transform 600ms cubic-bezier(.3,0,.2,1) ${f.delay}ms`, filter: 'drop-shadow(0 6px 8px rgba(0,0,0,.5))' }}>
       {f.card ? <Card c={f.card} w={w} /> : <Back w={w} />}
     </div>
   );
@@ -340,21 +340,25 @@ function Table({ view, onAsk, onAgain, againLabel = 'Play again' }) {
         ? `✅ Got ${ev.ids.length} ${ev.ids.length === 1 ? single(ev.r) : plural(ev.r)} from ${names[ev.t]}`
         : (ev.drew ? `🐟 Go Fish! ${names[ev.a]} draws a card` : '🐟 Go Fish! Pond is empty');
       setBubble(b => (b ? { ...b, text: resultText } : b));
-      if (from && a2 && cards.length) setFlights(cards.map((c, i) => ({ key: ev.id + '-' + i, from, to: a2, card: c, delay: i * 140 })));
-    }, 1300));
-    timers.push(setTimeout(() => { setBubble(null); setFlights([]); }, 2500));
-    timers.push(setTimeout(() => setBusy(false), 2600));
+      if (from && a2 && cards.length) setFlights(cards.map((c, i) => ({ key: ev.id + '-' + i, from, to: a2, card: c, delay: i * 90 })));
+    }, 650));
+    timers.push(setTimeout(() => { setFlights([]); setBusy(false); }, 1500));
+    timers.push(setTimeout(() => setBubble(null), 2300));
     return () => timers.forEach(clearTimeout);
   }, [evId]);
 
-  const sorted = useMemo(() => [...hand].sort((a, b) => RANKS.indexOf(a.rank) - RANKS.indexOf(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit)), [hand]);
+  const evPending = !!view.ev && view.ev.id !== lastEv.current;
+  const stableHand = useRef(hand);
+  if (!busy && !evPending) stableHand.current = hand;
+  const shownHand = busy || evPending ? stableHand.current : hand;
+  const sorted = useMemo(() => [...shownHand].sort((a, b) => RANKS.indexOf(a.rank) - RANKS.indexOf(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit)), [shownHand]);
   useEffect(() => { if (sel && !hand.some(c => c.rank === sel)) setSel(null); }, [hand]);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log.length]);
 
   const prev = useRef(null);
   const [fresh, setFresh] = useState({});
   useEffect(() => {
-    const ids = hand.map(c => c.id);
+    const ids = shownHand.map(c => c.id);
     if (prev.current) {
       const nw = ids.filter(i => !prev.current.includes(i));
       if (nw.length && nw.length < 6) {
@@ -365,7 +369,7 @@ function Table({ view, onAsk, onAgain, againLabel = 'Play again' }) {
       }
     }
     prev.current = ids;
-  }, [hand]);
+  }, [shownHand]);
 
   const opps = Array.from({ length: n - 1 }, (_, i) => (me + 1 + i) % n);
   let left = null, top = null, right = null;
@@ -468,7 +472,7 @@ function Table({ view, onAsk, onAgain, againLabel = 'Play again' }) {
 }
 
 /* =====================  SOLO  ===================== */
-const AI_DELAY = 3200; // lets the card animation finish before the next AI move
+const AI_DELAY = 2300; // lets the card animation finish before the next AI move
 const SOLO_NAMES = ['You', 'Sayan', 'Payel'];
 const soloGame = () => newGame(SOLO_NAMES, [false, true, true], true);
 
