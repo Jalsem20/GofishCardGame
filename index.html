@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Go Fish</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<style>
+  body { background:#1c0b0e; margin:0; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .felt { background: radial-gradient(circle at 50% 30%, #8d4c52 0%, #62303a 45%, #3b171e 100%); }
+  .back { background-color:#1f6a52;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.14) 0 3px, transparent 3px 8px),
+                      repeating-linear-gradient(-45deg, rgba(0,0,0,.18) 0 3px, transparent 3px 8px); }
+  @keyframes glow { 0%,100%{ box-shadow:0 0 0 0 rgba(251,191,36,.7);} 50%{ box-shadow:0 0 18px 6px rgba(251,191,36,.55);} }
+  .glow { animation: glow 1.6s ease-in-out infinite; }
+  .scroll-thin::-webkit-scrollbar{ height:6px; width:6px } .scroll-thin::-webkit-scrollbar-thumb{ background:#7a4a50; border-radius:9px }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+
+/* =====================  GAME ENGINE (2–4 players)  ===================== */
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+const PLURAL = { A:'Aces', J:'Jacks', Q:'Queens', K:'Kings' };
+const SINGLE = { A:'Ace', J:'Jack', Q:'Queen', K:'King' };
+const plural = r => PLURAL[r] || r + 's';
+const single = r => SINGLE[r] || r;
+const isRed = s => s === '♥' || s === '♦';
+const clone = o => JSON.parse(JSON.stringify(o));
+const parseCard = id => ({ id, rank: id.slice(0, -1), suit: id.slice(-1) });
+
+function newDeck() {
+  const d = [];
+  for (const s of SUITS) for (const r of RANKS) d.push({ id: r + s, rank: r, suit: s });
+  for (let i = d.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [d[i], d[j]] = [d[j], d[i]];
+  }
+  return d;
+}
+
+function say(s, t, k = 'info') { s.log.push({ id: s.nid++, t, k }); }
+const V = (s, p, a, b) => (s.names[p] === 'You' ? a : b); // verb agreement for solo "You"
+
+function checkBooks(s, p) {
+  const counts = {};
+  s.hands[p].forEach(c => { counts[c.rank] = (counts[c.rank] || 0) + 1; });
+  Object.keys(counts).forEach(r => {
+    if (counts[r] === 4) {
+      s.hands[p] = s.hands[p].filter(c => c.rank !== r);
+      s.books[p].push(r);
+      s.known.forEach(k => { const i = k.indexOf(r); if (i > -1) k.splice(i, 1); });
+      say(s, `${s.names[p]} laid down a book of ${plural(r)}!`, 'book');
+    }
+  });
+}
+
+function advance(s) { s.turn = (s.turn + 1) % s.n; }
+
+function normalize(s) {
+  for (let p = 0; p < s.n; p++) checkBooks(s, p);
+  for (let g = 0; g < 16; g++) {
+    const holders = s.hands.filter(h => h.length).length;
+    const total = s.books.reduce((a, b) => a + b.length, 0);
+    if (total === 13 || (s.deck.length === 0 && holders < 2)) {
+      s.over = true;
+      say(s, 'The game is over!', 'book');
+      return s;
+    }
+    const cur = s.turn;
+    if (s.hands[cur].length === 0) {
+      if (s.deck.length) {
+        s.hands[cur].push(s.deck.pop());
+        say(s, `${s.names[cur]} ${V(s, cur, 'have', 'has')} no cards left and ${V(s, cur, 'draw', 'draws')} one from the pond.`, 'fish');
+        checkBooks(s, cur);
+        continue;
+      }
+      advance(s);
+      continue;
+    }
+    const othersHave = s.hands.some((h, i) => i !== cur && h.length);
+    if (!othersHave) {
+      if (s.deck.length) { s.hands[cur].push(s.deck.pop()); checkBooks(s, cur); }
+      advance(s);
+      continue;
+    }
+    break;
+  }
+  return s;
+}
+
+function newGame(names, ai, solo) {
+  const n = names.length;
+  const s = { n, names: names.slice(), ai: ai.slice(), solo: !!solo, deck: newDeck(),
+              hands: names.map(() => []), books: names.map(() => []), known: names.map(() => []),
+              turn: 0, over: false, log: [], nid: 1 };
+  const per = n <= 3 ? 7 : 5;
+  for (let i = 0; i < per; i++) for (let p = 0; p < n; p++) s.hands[p].push(s.deck.pop());
+  say(s, `Cards dealt — ${per} each. ${s.names[0]} ${V(s, 0, 'go', 'goes')} first.`, 'info');
+  return normalize(s);
+}
+
+function act(state, asker, target, rank) {
+  const s = clone(state);
+  const A = s.names[asker], T = s.names[target];
+  say(s, `${A} asked ${T}: “Any ${plural(rank)}?”`, 'ask');
+  if (!s.ai[asker] || true) { if (!s.known[asker].includes(rank)) s.known[asker].push(rank); }
+  const matches = s.hands[target].filter(c => c.rank === rank);
+  let extraTurn = false, drew = false;
+  if (matches.length) {
+    s.hands[target] = s.hands[target].filter(c => c.rank !== rank);
+    s.hands[asker].push(...matches);
+    const k = s.known[target]; const i = k.indexOf(rank); if (i > -1) k.splice(i, 1);
+    say(s, `${T} ${V(s, target, 'hand', 'hands')} over ${matches.length} ${matches.length === 1 ? single(rank) : plural(rank)}. ${A} ${V(s, asker, 'go', 'goes')} again!`, 'good');
+    extraTurn = true;
+  } else {
+    say(s, `${T} ${V(s, target, 'have', 'has')} no ${plural(rank)}. Go Fish!`, 'fish');
+    if (s.deck.length) {
+      const c = s.deck.pop();
+      s.hands[asker].push(c);
+      drew = true;
+      if (c.rank === rank) {
+        say(s, s.solo && asker === 0 ? `You drew the ${c.rank}${c.suit} — exactly what you asked for! Go again!`
+                                      : `${A} drew the rank ${V(s, asker, 'you', 'they')} asked for — lucky, ${V(s, asker, 'go', 'goes')} again!`, 'good');
+        extraTurn = true;
+      } else {
+        say(s, s.solo && asker === 0 ? `You drew the ${c.rank}${c.suit}. Turn passes.` : `${A} drew a card from the pond. Turn passes.`, 'fish');
+      }
+    } else {
+      say(s, 'The pond is empty. Turn passes.', 'info');
+    }
+  }
+  s.ev = { id: s.nid++, a: asker, t: target, r: rank, k: matches.length ? 'give' : 'fish', ids: matches.map(c => c.id), drew };
+  checkBooks(s, asker);
+  if (!extraTurn) advance(s);
+  return normalize(s);
+}
+
+function aiMove(state) {
+  const p = state.turn;
+  const counts = {};
+  state.hands[p].forEach(c => { counts[c.rank] = (counts[c.rank] || 0) + 1; });
+  const myRanks = Object.keys(counts);
+  const opps = state.hands.map((_, i) => i).filter(i => i !== p && state.hands[i].length);
+  if (!myRanks.length || !opps.length) return normalize(clone(state));
+  const cands = [];
+  opps.forEach(o => state.known[o].forEach(r => { if (counts[r]) cands.push({ o, r, sc: counts[r] }); }));
+  let target, rank;
+  if (cands.length && Math.random() < 0.85) {
+    cands.sort((a, b) => b.sc - a.sc);
+    target = cands[0].o; rank = cands[0].r;
+  } else {
+    const max = Math.max(...Object.values(counts));
+    const pool = Math.random() < 0.65 ? myRanks.filter(r => counts[r] === max) : myRanks;
+    rank = pool[Math.floor(Math.random() * pool.length)];
+    target = opps[Math.floor(Math.random() * opps.length)];
+  }
+  return act(state, p, target, rank);
+}
+
+const toView = (g, me) => ({ n: g.n, names: g.names, ai: g.ai, counts: g.hands.map(h => h.length), books: g.books,
+  turn: g.turn, over: g.over, deck: g.deck.length, log: g.log, hand: g.hands[me], me, ev: g.ev || null });
+
+/* =====================  VISUALS  ===================== */
+function useWidth() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(() => { const f = () => setW(window.innerWidth); window.addEventListener('resize', f); return () => window.removeEventListener('resize', f); }, []);
+  return w;
+}
+
+function Card({ c, w = 64, lifted = false, onClick, ring = false, fresh = false }) {
+  const col = isRed(c.suit) ? '#b3261e' : '#1c1c1e';
+  const h = Math.round(w * 1.45);
+  const face = c.rank === 'J' || c.rank === 'Q' || c.rank === 'K';
+  const corner = { position: 'absolute', textAlign: 'center', lineHeight: 1, fontWeight: 700, fontFamily: 'Georgia, serif' };
+  return (
+    <div onClick={onClick}
+      className={`relative shrink-0 select-none border border-[#d6c8a3] bg-[#f7f0de] shadow-lg transition-transform duration-150 ${onClick ? 'cursor-pointer hover:-translate-y-1' : ''} ${ring ? 'ring-2 ring-amber-400' : fresh ? 'ring-2 ring-sky-300' : ''}`}
+      style={{ width: w, height: h, color: col, borderRadius: w * 0.1, transform: lifted ? 'translateY(-18px)' : undefined }}>
+      <div style={{ ...corner, left: w * 0.07, top: w * 0.05 }}>
+        <div style={{ fontSize: w * (c.rank === '10' ? 0.26 : 0.3) }}>{c.rank}</div>
+        <div style={{ fontSize: w * 0.26 }}>{c.suit}</div>
+      </div>
+      <div style={{ ...corner, right: w * 0.07, bottom: w * 0.05, transform: 'rotate(180deg)' }}>
+        <div style={{ fontSize: w * (c.rank === '10' ? 0.26 : 0.3) }}>{c.rank}</div>
+        <div style={{ fontSize: w * 0.26 }}>{c.suit}</div>
+      </div>
+      <div className="absolute inset-0 flex items-center justify-center">
+        {face ? (
+          <div className="flex flex-col items-center justify-center border-2 rounded-md" style={{ width: w * 0.5, height: h * 0.5, borderColor: col, background: isRed(c.suit) ? '#f6dcd5' : '#e4e1d6', fontFamily: 'Georgia, serif' }}>
+            <div style={{ fontSize: w * 0.34, fontWeight: 700, lineHeight: 1 }}>{c.rank}</div>
+            <div style={{ fontSize: w * 0.24, lineHeight: 1 }}>{c.suit}</div>
+          </div>
+        ) : (
+          <div style={{ fontSize: w * (c.rank === 'A' ? 0.62 : 0.48), lineHeight: 1 }}>{c.suit}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Back({ w = 44, style }) {
+  return <div className="back border-2 border-[#f2ead3] shadow-md" style={{ width: w, height: w * 1.45, borderRadius: w * 0.1, ...style }} />;
+}
+
+function Avatar({ who, size = 76, active = false, asked = false }) {
+  const v = who % 4;
+  const skin = ['#e2b78e', '#c48e5f', '#d9a273', '#a9744a'][v];
+  const bg = ['#6b3b2e', '#3c5a4e', '#5a3a63', '#2f4a6b'][v];
+  return (
+    <div className={`rounded-full border-4 overflow-hidden shadow-xl transition-colors ${asked ? 'border-sky-300 animate-pulse' : 'border-amber-400'} ${active && !asked ? 'glow' : ''}`} style={{ width: size, height: size, background: bg }}>
+      <svg viewBox="0 0 100 100" width="100%" height="100%">
+        <circle cx="50" cy="50" r="50" fill={bg} />
+        <path d="M14 100 C16 78 34 72 50 72 C66 72 84 78 86 100Z" fill={['#2f3f5e', '#8a2f2f', '#d1a13a', '#4a7a4a'][v]} />
+        {v === 2 && <path d="M24 48 C20 20 80 20 76 48 L80 86 C66 90 62 70 50 70 C38 70 34 90 20 86Z" fill="#1d1414" />}
+        <ellipse cx="50" cy="50" rx="21" ry="24" fill={skin} />
+        {v === 0 && <path d="M28 44 C28 22 72 22 72 44 C64 32 36 32 28 44Z" fill="#3a2a22" />}
+        {v === 1 && <path d="M27 46 C24 20 76 20 73 46 C68 34 32 34 27 46Z" fill="#1a1414" />}
+        {v === 2 && <path d="M29 46 C32 28 68 28 71 46 C62 36 38 36 29 46Z" fill="#1d1414" />}
+        {v === 3 && <path d="M30 40 C34 28 66 28 70 40 C62 34 38 34 30 40Z" fill="#2a2a2a" />}
+        <circle cx="42" cy="50" r="2.4" fill="#1a1a1a" /><circle cx="58" cy="50" r="2.4" fill="#1a1a1a" />
+        <path d="M36 44 H47 M53 44 H64" stroke="#2a1d17" strokeWidth="2.4" strokeLinecap="round" />
+        {v === 0 && <path d="M36 62 C42 56 58 56 64 62 C58 66 42 66 36 62Z" fill="#2a1d17" />}
+        {v === 0 && <path d="M43 67 C47 69 53 69 57 67" stroke="#7a3b2e" strokeWidth="2" fill="none" strokeLinecap="round" />}
+        {v === 1 && <path d="M32 58 C34 76 66 76 68 58 C62 66 38 66 32 58Z" fill="#1a1414" />}
+        {v === 2 && <circle cx="50" cy="40" r="2" fill="#c0262d" />}
+        {v === 2 && <path d="M44 63 C48 66 52 66 56 63" stroke="#8a2f3a" strokeWidth="2" fill="none" strokeLinecap="round" />}
+        {v === 2 && <circle cx="29" cy="58" r="2.4" fill="#f3c24a" />}
+        {v === 2 && <circle cx="71" cy="58" r="2.4" fill="#f3c24a" />}
+        {v === 3 && <g fill="none" stroke="#1a1a1a" strokeWidth="2"><circle cx="42" cy="50" r="6.5" /><circle cx="58" cy="50" r="6.5" /><path d="M48.5 50 H51.5" /></g>}
+        {v === 3 && <path d="M43 63 C47 66 53 66 57 63" stroke="#5a2f26" strokeWidth="2" fill="none" strokeLinecap="round" />}
+      </svg>
+    </div>
+  );
+}
+
+function Books({ list, small = false }) {
+  if (!list.length) return <div className="text-[11px] text-rose-200/60 h-7 flex items-center">No books yet</div>;
+  return (
+    <div className="flex flex-wrap gap-1 justify-center">
+      {list.map(r => (
+        <div key={r} title={`Book of ${plural(r)}`} className="relative" style={{ width: small ? 26 : 30, height: small ? 34 : 40 }}>
+          <div className="absolute inset-0 rounded bg-[#d9ccaa] translate-x-[3px] -translate-y-[2px]" />
+          <div className="absolute inset-0 rounded bg-[#f7f0de] border border-[#c9b98f] shadow flex flex-col items-center justify-center text-[#1c1c1e] font-bold leading-none" style={{ fontFamily: 'Georgia, serif', fontSize: small ? 11 : 13 }}>
+            {r}<span className="text-[8px] opacity-60 mt-0.5">×4</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Opponent({ idx, view, selectedRank, onAsk, canAct, askedSeat }) {
+  const small = useWidth() < 640;
+  const bw = small ? 30 : 44, step = small ? 5 : 7;
+  const n = view.counts[idx];
+  const canAsk = selectedRank && canAct && n > 0;
+  const active = view.turn === idx && !view.over;
+  const shown = Math.min(n, 8);
+  const bk = view.books[idx];
+  return (
+    <div className={`flex flex-col items-center gap-1 w-[128px] sm:w-[170px] ${canAsk ? 'cursor-pointer' : ''}`} onClick={() => canAsk && onAsk(idx)}>
+      <div className="relative" style={{ height: bw * 1.7, width: small ? 90 : 120 }}>
+        {Array.from({ length: shown }).map((_, i) => {
+          const a = (i - (shown - 1) / 2) * 8;
+          return <div key={i} className="absolute bottom-0" style={{ left: (small ? 45 : 60) - bw / 2 + (i - (shown - 1) / 2) * step, transformOrigin: '50% 120%', transform: `rotate(${a}deg)` }}><Back w={bw} /></div>;
+        })}
+        {n === 0 && <div className="absolute inset-0 flex items-end justify-center text-[11px] text-rose-200/70">no cards</div>}
+      </div>
+      <div className="relative" data-seat={idx}>
+        <Avatar who={idx} size={small ? 56 : 72} active={active} asked={askedSeat === idx} />
+      </div>
+      <div className={`rounded-lg px-3 py-1 text-center leading-tight border max-w-full ${canAsk ? 'bg-amber-300 border-amber-100 text-[#3b171e] animate-pulse' : 'bg-[#3b171e] border-[#7b4047] text-rose-50'}`}>
+        <div className="text-sm font-bold truncate">{view.names[idx]}{view.ai[idx] && view.names.length > 0 ? ' 🤖' : ''}</div>
+        <div className="text-[11px] opacity-90">{canAsk ? `Ask for ${plural(selectedRank)}` : active ? (view.ai[idx] ? 'Thinking…' : 'Their turn') : `${n} card${n === 1 ? '' : 's'} · ${bk.length} book${bk.length === 1 ? '' : 's'}`}</div>
+      </div>
+      <Books list={bk} small />
+    </div>
+  );
+}
+
+function Flight({ f }) {
+  const [go, setGo] = useState(false);
+  useEffect(() => { const a = requestAnimationFrame(() => requestAnimationFrame(() => setGo(true))); return () => cancelAnimationFrame(a); }, []);
+  const w = 46, h = Math.round(w * 1.45), p = go ? f.to : f.from;
+  return (
+    <div className="absolute left-0 top-0 pointer-events-none z-[60]"
+      style={{ transform: `translate(${p.x - w / 2}px, ${p.y - h / 2}px) scale(${go ? 0.85 : 1.15}) rotate(${go ? 0 : -10}deg)`,
+               transition: `transform 900ms cubic-bezier(.4,0,.2,1) ${f.delay}ms`, filter: 'drop-shadow(0 6px 8px rgba(0,0,0,.5))' }}>
+      {f.card ? <Card c={f.card} w={w} /> : <Back w={w} />}
+    </div>
+  );
+}
+
+/* One table, rendered from a "view" — works for solo, host and remote players */
+function Table({ view, onAsk, onAgain, againLabel = 'Play again' }) {
+  const { n, names, counts, books, turn, over, deck, log, hand, me } = view;
+  const [sel, setSel] = useState(null);
+  const logRef = useRef(null);
+  const width = useWidth();
+  const cw = width < 640 ? 54 : 74;
+  const myTurn = turn === me && !over;
+
+  /* ---- card-transfer animation ---- */
+  const tableRef = useRef(null);
+  const [bubble, setBubble] = useState(null);
+  const [flights, setFlights] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const evId = view.ev ? view.ev.id : 0;
+  const lastEv = useRef(evId);
+  const canAct = myTurn && !busy;
+  useEffect(() => {
+    const ev = view.ev;
+    if (!ev || ev.id === lastEv.current) return;
+    lastEv.current = ev.id;
+    const root = tableRef.current;
+    const pos = q => {
+      if (!root) return null; const el = root.querySelector(q); if (!el) return null;
+      const r = el.getBoundingClientRect(), b = root.getBoundingClientRect();
+      return { x: r.left - b.left + r.width / 2, y: r.top - b.top + r.height / 2 };
+    };
+    const pa = pos(`[data-seat="${ev.a}"]`), pt = pos(`[data-seat="${ev.t}"]`);
+    const mid = pa && pt ? { x: (pa.x + pt.x) / 2, y: (pa.y + pt.y) / 2 } : (pa || pt || { x: 150, y: 150 });
+    setBusy(true);
+    setBubble({ x: mid.x, y: mid.y, tp: pt, seat: ev.t, text: `${names[ev.a]} asks ${names[ev.t]} for ${plural(ev.r)}` });
+    const timers = [];
+    timers.push(setTimeout(() => {
+      const a2 = pos(`[data-seat="${ev.a}"]`), t2 = pos(`[data-seat="${ev.t}"]`);
+      let from = null, cards = [];
+      if (ev.k === 'give') { from = t2; cards = ev.ids.map(parseCard); }
+      else if (ev.drew) { from = pos('[data-pond]'); cards = [null]; }
+      const resultText = ev.k === 'give'
+        ? `✅ Got ${ev.ids.length} ${ev.ids.length === 1 ? single(ev.r) : plural(ev.r)} from ${names[ev.t]}`
+        : (ev.drew ? `🐟 Go Fish! ${names[ev.a]} draws a card` : '🐟 Go Fish! Pond is empty');
+      setBubble(b => (b ? { ...b, text: resultText } : b));
+      if (from && a2 && cards.length) setFlights(cards.map((c, i) => ({ key: ev.id + '-' + i, from, to: a2, card: c, delay: i * 140 })));
+    }, 1300));
+    timers.push(setTimeout(() => { setBubble(null); setFlights([]); }, 2500));
+    timers.push(setTimeout(() => setBusy(false), 2600));
+    return () => timers.forEach(clearTimeout);
+  }, [evId]);
+
+  const sorted = useMemo(() => [...hand].sort((a, b) => RANKS.indexOf(a.rank) - RANKS.indexOf(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit)), [hand]);
+  useEffect(() => { if (sel && !hand.some(c => c.rank === sel)) setSel(null); }, [hand]);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log.length]);
+
+  const prev = useRef(null);
+  const [fresh, setFresh] = useState({});
+  useEffect(() => {
+    const ids = hand.map(c => c.id);
+    if (prev.current) {
+      const nw = ids.filter(i => !prev.current.includes(i));
+      if (nw.length && nw.length < 6) {
+        const f = {}; nw.forEach(i => { f[i] = 1; }); setFresh(f);
+        prev.current = ids;
+        const t = setTimeout(() => setFresh({}), 3500);
+        return () => clearTimeout(t);
+      }
+    }
+    prev.current = ids;
+  }, [hand]);
+
+  const opps = Array.from({ length: n - 1 }, (_, i) => (me + 1 + i) % n);
+  let left = null, top = null, right = null;
+  if (n === 2) top = opps[0];
+  else if (n === 3) { left = opps[0]; right = opps[1]; }
+  else { left = opps[0]; top = opps[1]; right = opps[2]; }
+
+  const ask = t => { if (!sel || !canAct) return; const r = sel; setSel(null); onAsk(t, r); };
+  const overlap = sorted.length <= 8 ? cw * 0.22 : Math.min(cw - 16, cw * 0.22 + (sorted.length - 8) * 4.5);
+  const lastLine = log[log.length - 1];
+  const scores = names.map((_, i) => ({ i, n: books[i].length })).sort((a, b) => b.n - a.n);
+  const winners = scores.filter(s => s.n === scores[0].n);
+
+  let hint;
+  if (over) hint = 'Game over';
+  else if (myTurn && busy) hint = 'Watch the cards…';
+  else if (myTurn) hint = sel ? `Asking for ${plural(sel)} — now tap who to ask` : 'Tap a card to choose which rank to ask for';
+  else hint = `${names[turn]} is playing…`;
+
+  return (
+    <div className="grid lg:grid-cols-[1fr_300px] gap-3">
+      <div ref={tableRef} className="felt relative rounded-3xl border border-[#7b4047] shadow-2xl overflow-hidden flex flex-col" style={{ minHeight: 660 }}>
+        <div className="px-3 pt-3">
+          <div className={`mx-auto max-w-md text-center rounded-2xl px-4 py-2 border transition-colors duration-300 min-h-[44px] flex items-center justify-center font-semibold text-sm sm:text-base ${bubble ? 'bg-[#fff6dc] text-[#3b171e] border-amber-300 shadow-lg' : 'bg-black/30 text-rose-50 border-white/10'}`}>
+            {bubble ? bubble.text : (lastLine && lastLine.t)}
+          </div>
+        </div>
+        {top !== null && <div className="flex justify-center pt-3"><Opponent idx={top} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} /></div>}
+        <div className={`flex flex-col items-center ${top !== null ? 'pt-2' : 'pt-4'}`}>
+          <div className="relative" data-pond style={{ width: 70, height: 100 }}>
+            {[2, 1, 0].map(i => <div key={i} className="absolute" style={{ left: i * 2, top: -i * 2 }}><Back w={66} /></div>)}
+            <div className="absolute inset-0 flex items-center justify-center"><span className="rounded-full bg-[#3b171e]/90 border border-amber-300 text-amber-200 text-sm font-bold px-2.5 py-0.5">{deck}</span></div>
+          </div>
+          <div className="text-xs font-semibold mt-1 tracking-wide text-rose-100">Pond · draw pile</div>
+        </div>
+
+        <div className="flex justify-between items-start px-2 sm:px-10 pt-3 flex-1">
+          <div>{left !== null && <Opponent idx={left} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
+          <div>{right !== null && <Opponent idx={right} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
+        </div>
+
+        <div className="flex flex-col items-center pb-3 px-2">
+          {myTurn && <div className="rounded-lg bg-[#fff6dc] text-[#3b171e] text-xs font-bold px-3 py-1 shadow mb-1 relative after:content-[''] after:absolute after:left-1/2 after:-bottom-1 after:w-2 after:h-2 after:bg-[#fff6dc] after:rotate-45 after:-translate-x-1/2">Your Turn</div>}
+          <div data-seat={me}><Avatar who={me} size={72} active={myTurn} asked={!!bubble && bubble.seat === me} /></div>
+          <div className="mt-1 rounded-lg px-4 py-0.5 text-center bg-[#3b171e] border border-[#7b4047] leading-tight">
+            <div className="text-sm font-bold">{names[me] === 'You' ? 'You' : `${names[me]} (you)`}</div>
+            <div className="text-[11px] opacity-90">{hand.length} cards · {books[me].length} book{books[me].length === 1 ? '' : 's'}</div>
+          </div>
+          <div className="mt-1"><Books list={books[me]} /></div>
+          <div className="text-xs mt-2 mb-1 text-amber-100 text-center min-h-[16px]">{hint}</div>
+          <div className="w-full overflow-x-auto scroll-thin pt-6 pb-2">
+            <div className="flex w-max mx-auto px-3">
+              {sorted.map((c, i) => (
+                <div key={c.id} style={{ marginLeft: i === 0 ? 0 : -overlap, zIndex: i }}>
+                  <Card c={c} w={cw} lifted={sel === c.rank} ring={sel === c.rank} fresh={!!fresh[c.id]}
+                    onClick={canAct ? () => setSel(sel === c.rank ? null : c.rank) : undefined} />
+                </div>
+              ))}
+              {sorted.length === 0 && <div className="text-sm text-rose-200/70 py-10">Your hand is empty</div>}
+            </div>
+          </div>
+        </div>
+
+        {flights.map(f => <Flight key={f.key} f={f} />)}
+
+        {over && !busy && (
+          <div className="absolute inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+            <div className="bg-[#fff6dc] text-[#3b171e] rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl">
+              <div className="text-3xl font-extrabold mb-1" style={{ fontFamily: 'Georgia, serif' }}>
+                {winners.length > 1 ? `Tie: ${winners.map(w => names[w.i]).join(' & ')}` : winners[0].i === me ? 'You win! 🎉' : `${names[winners[0].i]} wins`}
+              </div>
+              <div className="text-sm opacity-70 mb-4">Final books</div>
+              {scores.map(s => (
+                <div key={s.i} className="flex items-center justify-between py-1.5 border-b border-[#3b171e]/15 last:border-0">
+                  <span className="font-semibold">{names[s.i]}</span>
+                  <span className="flex items-center gap-2"><span className="text-xs opacity-70">{books[s.i].join(' ')}</span><span className="font-bold text-lg">{s.n}</span></span>
+                </div>
+              ))}
+              {onAgain && <button onClick={onAgain} className="mt-5 rounded-full bg-[#3b171e] text-amber-200 font-bold px-6 py-2 hover:bg-[#52222b]">{againLabel}</button>}
+              {!onAgain && <div className="mt-4 text-xs opacity-70">Waiting for the host to start another game…</div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <aside className="rounded-3xl bg-[#2a1215] border border-[#7b4047] shadow-xl flex flex-col overflow-hidden h-72 lg:h-auto lg:max-h-[720px]">
+        <div className="px-4 py-3 border-b border-[#7b4047] font-bold text-sm tracking-wide">Game log</div>
+        <div ref={logRef} className="flex-1 overflow-y-auto scroll-thin px-4 py-2 space-y-1.5 text-[13px]">
+          {log.map(l => (
+            <div key={l.id} className={{ ask: 'text-amber-100', fish: 'text-sky-300', good: 'text-emerald-300', book: 'text-yellow-300 font-bold', info: 'text-rose-200/80' }[l.k]}>
+              {l.k === 'book' ? '📖 ' : l.k === 'fish' ? '🐟 ' : '• '}{l.t}
+            </div>
+          ))}
+        </div>
+        <div className="px-4 py-2 border-t border-[#7b4047] text-[11px] text-rose-200/70">
+          Ask for a rank you hold. Get cards → go again. “Go Fish” → draw; a matching draw → go again. New cards glow blue.
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/* =====================  SOLO  ===================== */
+const AI_DELAY = 3200; // lets the card animation finish before the next AI move
+const SOLO_NAMES = ['You', 'Sayan', 'Payel'];
+const soloGame = () => newGame(SOLO_NAMES, [false, true, true], true);
+
+function Solo() {
+  const [g, setG] = useState(soloGame);
+  useEffect(() => {
+    if (g.over || !g.ai[g.turn]) return;
+    const t = setTimeout(() => setG(s => (s.over || !s.ai[s.turn] ? s : aiMove(s))), AI_DELAY);
+    return () => clearTimeout(t);
+  }, [g]);
+  return <Table view={toView(g, 0)} onAsk={(t, r) => setG(s => act(s, 0, t, r))} onAgain={() => setG(soloGame())} />;
+}
+
+/* =====================  ONLINE (room, host-authoritative)  ===================== */
+const genCode = () => { const a = 'abcdefghjkmnpqrstuvwxyz'; return Array.from({ length: 4 }, () => a[Math.floor(Math.random() * a.length)]).join(''); };
+const cleanName = (s, fb) => { let t = String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 12); if (!t || /^you$/i.test(t)) t = fb; return t; };
+const BOT_NAMES = ['Sayan', 'Payel', 'Aiman', 'Mei'];
+
+function Online() {
+  const [stage, setStage] = useState('entry'); // entry | connecting | joined | error
+  const [name, setName] = useState('');
+  const [codeIn, setCodeIn] = useState('');
+  const [err, setErr] = useState('');
+  const [tick, setTick] = useState(0);
+  const bump = () => setTick(x => x + 1);
+  const R = useRef({ room: null, role: null, code: '', myPeer: null, hostPeer: null, name: '',
+                     seats: [], phase: 'lobby', g: null, pub: null, hand: [], logMap: new Map(), offs: [], timers: [] });
+
+  useEffect(() => () => {
+    const H = R.current;
+    H.offs.forEach(f => { try { f(); } catch (e) {} });
+    H.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+    try { H.room && H.room.leave(); } catch (e) {}
+  }, []);
+
+  function broadcast() {
+    const H = R.current; if (!H.room || H.role !== 'host') return;
+    const g = H.g, playing = H.phase === 'play' && g;
+    const pub = { code: H.code, phase: H.phase, seats: H.seats.map(s => ({ peer: s.peer, name: s.name, ai: !!s.ai })) };
+    if (playing) Object.assign(pub, { counts: g.hands.map(h => h.length), books: g.books, turn: g.turn, over: g.over, deck: g.deck.length, log: g.log.slice(-12), ev: g.ev || null });
+    H.room.emit('state', pub).catch(() => {});
+    if (playing) H.seats.forEach((s, i) => { if (!s.ai && s.peer !== H.myPeer) H.room.emit('hand', { to: s.peer, cards: g.hands[i].map(c => c.id) }).catch(() => {}); });
+  }
+
+  function hostHello(m) {
+    const H = R.current;
+    if (m.sameTab) {
+      if (!H.seats.length) { H.myPeer = m.peer; H.seats.push({ peer: m.peer, name: H.name, ai: false }); setStage('joined'); bump(); broadcast(); }
+      return;
+    }
+    if (H.phase !== 'lobby' || H.seats.some(s => s.peer === m.peer) || H.seats.length >= 4) return;
+    const base = cleanName(m.data && m.data.name, 'Player'); let nm = base, k = 2;
+    while (H.seats.some(s => s.name === nm)) nm = base + k++;
+    H.seats.push({ peer: m.peer, name: nm, ai: false });
+    bump(); broadcast();
+  }
+
+  function hostMove(m) {
+    const H = R.current; const g = H.g;
+    if (H.phase !== 'play' || !g || g.over || m.sameTab) return;
+    const seat = H.seats.findIndex(s => s.peer === m.peer);
+    const d = m.data || {};
+    if (seat < 0 || seat !== g.turn || H.seats[seat].ai) return;
+    if (!Number.isInteger(d.t) || d.t === seat || d.t < 0 || d.t >= g.n || !g.hands[d.t].length) return;
+    if (!g.hands[seat].some(c => c.rank === d.r)) return;
+    H.g = act(g, seat, d.t, d.r); bump(); broadcast();
+  }
+
+  async function connect(role) {
+    const H = R.current;
+    const lib = window.claude && window.claude.use ? await window.claude.use('room') : null;
+    if (!lib) { setErr('Online play isn’t available here. Open this page from claude.ai while signed in, and ask the owner to share it with you.'); setStage('error'); return; }
+    const code = role === 'host' ? genCode() : codeIn.trim().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    if (code.length < 3) { setErr('Enter the room code from the host.'); return; }
+    setErr(''); setStage('connecting');
+    let room;
+    try { room = await lib.join('gofish-' + code); }
+    catch (e) { setErr('Could not join the room' + (e && e.code ? ` (${e.code})` : '') + '.'); setStage('error'); return; }
+    H.room = room; H.role = role; H.code = code; H.name = cleanName(name, role === 'host' ? 'Host' : 'Player');
+    const guard = f => m => { try { f(m); } catch (e) { console.error(e); } };
+
+    H.offs.push(room.on('hello', guard(m => { if (m.sameTab) H.myPeer = m.peer; if (role === 'host') hostHello(m); })));
+    if (role === 'host') {
+      H.offs.push(room.on('move', guard(hostMove)));
+      H.offs.push(room.onPeers(ch => {
+        ch.left.forEach(p => {
+          const i = H.seats.findIndex(s => s.peer === p.peer && !s.ai);
+          if (i < 0) return;
+          if (H.phase === 'lobby') H.seats.splice(i, 1);
+          else { H.seats[i].ai = true; H.g.ai[i] = true; H.g.log.push({ id: H.g.nid++, t: `${H.seats[i].name} left — a bot takes over.`, k: 'info' }); }
+          bump(); broadcast();
+        });
+        if (ch.joined.some(p => !p.isMe)) broadcast();
+      }));
+      H.timers.push(setInterval(broadcast, 3000));
+      room.emit('hello', { name: H.name }).catch(() => {});
+    } else {
+      H.offs.push(room.on('state', guard(m => {
+        if (m.sameTab) return;
+        const d = m.data; if (!d || d.code !== H.code || !Array.isArray(d.seats)) return;
+        if (!H.hostPeer) H.hostPeer = m.peer; else if (H.hostPeer !== m.peer) return;
+        if (d.phase !== 'play') H.logMap = new Map();
+        (d.log || []).forEach(l => H.logMap.set(l.id, l));
+        H.pub = d; setStage('joined'); bump();
+      })));
+      H.offs.push(room.on('hand', guard(m => {
+        const d = m.data; if (!d || m.peer !== H.hostPeer || d.to !== H.myPeer || !Array.isArray(d.cards)) return;
+        H.hand = d.cards.map(parseCard); bump();
+      })));
+      const hello = () => { const me = H.pub && H.myPeer ? H.pub.seats.findIndex(s => s.peer === H.myPeer) : -1; if (me < 0) room.emit('hello', { name: H.name }).catch(() => {}); };
+      hello(); H.timers.push(setInterval(hello, 2000));
+      H.timers.push(setTimeout(() => { if (!H.pub) { setErr('No game found for that code. Check the code, and make sure the host has created the room and is still on the page.'); setStage('error'); } }, 10000));
+    }
+  }
+
+  /* host-side AI driver */
+  useEffect(() => {
+    const H = R.current;
+    if (H.role !== 'host' || H.phase !== 'play' || !H.g || H.g.over || !H.seats[H.g.turn] || !H.seats[H.g.turn].ai) return;
+    const t = setTimeout(() => {
+      if (!H.g || H.g.over || !H.seats[H.g.turn] || !H.seats[H.g.turn].ai) return;
+      H.g = aiMove(H.g); bump(); broadcast();
+    }, AI_DELAY);
+    return () => clearTimeout(t);
+  }, [tick]);
+
+  const H = R.current;
+  const isHost = H.role === 'host';
+  const reset = () => { window.location.reload(); };
+
+  function startGame() {
+    if (H.seats.length < 2) return;
+    H.g = newGame(H.seats.map(s => s.name), H.seats.map(s => !!s.ai), false);
+    H.phase = 'play'; bump(); broadcast();
+  }
+  function addBot() {
+    if (H.seats.length >= 4) return;
+    const used = H.seats.map(s => s.name); const nm = BOT_NAMES.find(b => !used.includes(b)) || 'Bot';
+    H.seats.push({ peer: 'bot-' + Math.random().toString(36).slice(2, 7), name: nm, ai: true }); bump(); broadcast();
+  }
+  function removeBot(i) { if (H.phase !== 'lobby' || !H.seats[i].ai) return; H.seats.splice(i, 1); bump(); broadcast(); }
+  function backToLobby() { H.phase = 'lobby'; H.g = null; bump(); broadcast(); }
+
+  /* ---------- screens ---------- */
+  if (stage === 'entry' || stage === 'error') {
+    return (
+      <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] shadow-2xl p-6 space-y-5">
+        <div>
+          <h2 className="text-xl font-bold" style={{ fontFamily: 'Georgia, serif' }}>Play online</h2>
+          <p className="text-xs text-rose-200/70 mt-1">2–4 players, each on their own device. Everyone must be signed in to claude.ai and have this page shared with them (Contributor access).</p>
+        </div>
+        {stage === 'error' && <div className="rounded-lg bg-black/40 border border-rose-400/40 text-rose-100 text-sm p-3">{err}</div>}
+        <label className="block text-sm">Your name
+          <input value={name} onChange={e => setName(e.target.value)} maxLength={12} placeholder="e.g. Jal" className="mt-1 w-full rounded-lg bg-[#2a1215] border border-[#7b4047] px-3 py-2 outline-none focus:border-amber-400" />
+        </label>
+        <button onClick={() => connect('host')} className="w-full rounded-full bg-amber-400 hover:bg-amber-300 text-[#3b171e] font-bold py-2.5 shadow">Create a room (I’m the host)</button>
+        <div className="flex items-center gap-2 text-xs text-rose-200/60"><div className="flex-1 h-px bg-white/15" />or<div className="flex-1 h-px bg-white/15" /></div>
+        <div className="flex gap-2">
+          <input value={codeIn} onChange={e => setCodeIn(e.target.value)} maxLength={8} placeholder="room code" className="flex-1 rounded-lg bg-[#2a1215] border border-[#7b4047] px-3 py-2 uppercase tracking-widest outline-none focus:border-amber-400" />
+          <button onClick={() => connect('client')} className="rounded-full bg-[#fff6dc] hover:bg-white text-[#3b171e] font-bold px-5 shadow">Join</button>
+        </div>
+        {stage === 'error' && <button onClick={() => setStage('entry')} className="text-xs underline text-rose-200/80">Dismiss</button>}
+      </div>
+    );
+  }
+  if (stage === 'connecting') {
+    return <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] p-8 text-center text-rose-100">Connecting to the room…</div>;
+  }
+
+  const pub = isHost ? { code: H.code, phase: H.phase, seats: H.seats } : H.pub;
+  if (!pub) return null;
+  const me = isHost ? 0 : pub.seats.findIndex(s => s.peer === H.myPeer);
+
+  if (pub.phase === 'play') {
+    if (isHost && H.g) return <Table view={toView(H.g, 0)} onAsk={(t, r) => { H.g = act(H.g, 0, t, r); bump(); broadcast(); }} onAgain={backToLobby} againLabel="Back to lobby" />;
+    if (!isHost && me >= 0 && pub.counts) {
+      const logArr = [...H.logMap.values()].sort((a, b) => a.id - b.id);
+      const view = { n: pub.seats.length, names: pub.seats.map(s => s.name), ai: pub.seats.map(s => s.ai), counts: pub.counts, books: pub.books,
+                     turn: pub.turn, over: pub.over, deck: pub.deck, log: logArr, hand: H.hand, me, ev: pub.ev || null };
+      return <Table view={view} onAsk={(t, r) => H.room.emit('move', { t, r }).catch(() => {})} />;
+    }
+    return <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] p-8 text-center text-rose-100">A game is already in progress in this room.</div>;
+  }
+
+  /* lobby */
+  return (
+    <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] shadow-2xl p-6 space-y-4">
+      <div className="text-center">
+        <div className="text-xs uppercase tracking-widest text-rose-200/70">Room code</div>
+        <div className="text-5xl font-extrabold tracking-[0.3em] text-amber-300 uppercase" style={{ fontFamily: 'Georgia, serif' }}>{pub.code}</div>
+        {isHost && <p className="text-xs text-rose-200/70 mt-2">Share this page with your friends (Contributor access), then give them this code.</p>}
+      </div>
+      <div className="space-y-2">
+        {[0, 1, 2, 3].map(i => {
+          const s = pub.seats[i];
+          return (
+            <div key={i} className="flex items-center gap-3 rounded-xl bg-[#2a1215] border border-[#7b4047] px-3 py-2">
+              {s ? <Avatar who={i} size={40} /> : <div className="w-10 h-10 rounded-full border-2 border-dashed border-[#7b4047]" />}
+              <div className="flex-1 text-sm">{s ? <span className="font-semibold">{s.name}{s.ai ? ' 🤖' : ''}{i === 0 ? ' · host' : ''}{!isHost && i === me ? ' · you' : ''}</span> : <span className="text-rose-200/50">Waiting for player…</span>}</div>
+              {isHost && s && s.ai && <button onClick={() => removeBot(i)} className="text-xs text-rose-200/70 hover:text-white">remove</button>}
+            </div>
+          );
+        })}
+      </div>
+      {isHost ? (
+        <div className="flex gap-2">
+          <button onClick={addBot} disabled={pub.seats.length >= 4} className="flex-1 rounded-full border border-amber-400 text-amber-200 font-bold py-2 disabled:opacity-40">Add AI player</button>
+          <button onClick={startGame} disabled={pub.seats.length < 2} className="flex-1 rounded-full bg-amber-400 text-[#3b171e] font-bold py-2 disabled:opacity-40">Start game</button>
+        </div>
+      ) : (
+        <div className="text-center text-sm text-rose-100">{me < 0 ? 'Joining…' : 'Waiting for the host to start…'}</div>
+      )}
+      <button onClick={reset} className="block mx-auto text-xs underline text-rose-200/70">Leave room</button>
+    </div>
+  );
+}
+
+/* =====================  APP  ===================== */
+function App() {
+  const [mode, setMode] = useState(null);
+  return (
+    <div className="min-h-screen text-rose-50 p-3 sm:p-5">
+      <div className="max-w-6xl mx-auto">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight" style={{ fontFamily: 'Georgia, serif' }}>Go Fish <span className="text-amber-400">♠</span></h1>
+            <p className="text-xs text-rose-200/70">Collect four of a kind. Most books wins.</p>
+          </div>
+          {mode && <button onClick={() => { if (mode === 'online') window.location.reload(); else setMode(null); }} className="rounded-full bg-amber-400 hover:bg-amber-300 text-[#3b171e] font-bold text-sm px-4 py-2 shadow">Menu</button>}
+        </div>
+        {!mode && (
+          <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto mt-8">
+            <button onClick={() => setMode('solo')} className="felt rounded-3xl border border-[#7b4047] p-6 text-left hover:border-amber-400 transition shadow-xl">
+              <div className="text-3xl mb-2">🤖</div>
+              <div className="text-lg font-bold" style={{ fontFamily: 'Georgia, serif' }}>Solo</div>
+              <div className="text-sm text-rose-200/80 mt-1">You vs. Sayan and Payel (AI).</div>
+            </button>
+            <button onClick={() => setMode('online')} className="felt rounded-3xl border border-[#7b4047] p-6 text-left hover:border-amber-400 transition shadow-xl">
+              <div className="text-3xl mb-2">👥</div>
+              <div className="text-lg font-bold" style={{ fontFamily: 'Georgia, serif' }}>Play with friends</div>
+              <div className="text-sm text-rose-200/80 mt-1">2–4 players on separate devices. Empty seats can be AI.</div>
+            </button>
+          </div>
+        )}
+        {mode === 'solo' && <Solo />}
+        {mode === 'online' && <Online />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
