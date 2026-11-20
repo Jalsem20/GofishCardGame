@@ -7,6 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <style>
   body { background:#1c0b0e; margin:0; font-family: ui-sans-serif, system-ui, sans-serif; }
@@ -483,6 +484,41 @@ function Solo() {
 }
 
 /* =====================  ONLINE (room, host-authoritative)  ===================== */
+function makeRoom(role, code) {
+  return new Promise((resolve, reject) => {
+    const handlers = {}, peerFns = [], conns = new Map();
+    let myId = null, done = false;
+    const fail = e => { if (!done) { done = true; try { peer.destroy(); } catch (x) {} reject(e); } };
+    const deliver = (topic, data, from, mine) => (handlers[topic] || []).forEach(f => f({ topic, data, peer: from, sameTab: mine, isMe: mine }));
+    const peersChange = (joined, left) => peerFns.forEach(f => f({ joined, left }));
+    const api = send => ({
+      emit: (t, d) => { send(t, d); deliver(t, d, myId, true); return Promise.resolve(); },
+      on: (t, f) => { (handlers[t] = handlers[t] || []).push(f); return () => {}; },
+      onPeers: f => { peerFns.push(f); return () => {}; },
+      leave: () => { try { peer.destroy(); } catch (x) {} return Promise.resolve(); },
+    });
+    const peer = role === 'host' ? new Peer('gofish-' + code) : new Peer();
+    const timer = setTimeout(() => fail({ code: 'timeout' }), 12000);
+    peer.on('error', e => fail({ code: e.type || 'error' }));
+    peer.on('open', id => {
+      myId = id;
+      if (role === 'host') {
+        peer.on('connection', c => {
+          c.on('open', () => { conns.set(c.peer, c); peersChange([{ peer: c.peer, isMe: false }], []); });
+          c.on('data', m => m && m.topic && deliver(m.topic, m.data, c.peer, false));
+          c.on('close', () => { conns.delete(c.peer); peersChange([], [{ peer: c.peer }]); });
+        });
+        clearTimeout(timer); done = true;
+        resolve(api((t, d) => conns.forEach(c => { if (c.open) c.send({ topic: t, data: d }); })));
+      } else {
+        const c = peer.connect('gofish-' + code, { reliable: true });
+        c.on('open', () => { clearTimeout(timer); done = true; resolve(api((t, d) => { if (c.open) c.send({ topic: t, data: d }); })); });
+        c.on('data', m => m && m.topic && deliver(m.topic, m.data, 'host', false));
+      }
+    });
+  });
+}
+
 const genCode = () => { const a = 'abcdefghjkmnpqrstuvwxyz'; return Array.from({ length: 4 }, () => a[Math.floor(Math.random() * a.length)]).join(''); };
 const cleanName = (s, fb) => { let t = String(s || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 12); if (!t || /^you$/i.test(t)) t = fb; return t; };
 const BOT_NAMES = ['Sayan', 'Payel', 'Aiman', 'Mei'];
@@ -539,14 +575,12 @@ function Online() {
 
   async function connect(role) {
     const H = R.current;
-    const lib = window.claude && window.claude.use ? await window.claude.use('room') : null;
-    if (!lib) { setErr('Online play isn’t available here. Open this page from claude.ai while signed in, and ask the owner to share it with you.'); setStage('error'); return; }
     const code = role === 'host' ? genCode() : codeIn.trim().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
     if (code.length < 3) { setErr('Enter the room code from the host.'); return; }
     setErr(''); setStage('connecting');
     let room;
-    try { room = await lib.join('gofish-' + code); }
-    catch (e) { setErr('Could not join the room' + (e && e.code ? ` (${e.code})` : '') + '.'); setStage('error'); return; }
+    try { room = await makeRoom(role, code); }
+    catch (e) { setErr(e && e.code === 'peer-unavailable' ? 'No room with that code. Check the code and that the host still has the page open.' : e && e.code === 'unavailable-id' ? 'That room code is taken — try Create again.' : 'Could not connect' + (e && e.code ? ` (${e.code})` : '') + '. Check your internet and try again.'); setStage('error'); return; }
     H.room = room; H.role = role; H.code = code; H.name = cleanName(name, role === 'host' ? 'Host' : 'Player');
     const guard = f => m => { try { f(m); } catch (e) { console.error(e); } };
 
@@ -618,7 +652,7 @@ function Online() {
       <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] shadow-2xl p-6 space-y-5">
         <div>
           <h2 className="text-xl font-bold" style={{ fontFamily: 'Georgia, serif' }}>Play online</h2>
-          <p className="text-xs text-rose-200/70 mt-1">2–4 players, each on their own device. Everyone must be signed in to claude.ai and have this page shared with them (Contributor access).</p>
+          <p className="text-xs text-rose-200/70 mt-1">2–4 players, each on their own device. Just open this page and use the same room code. Keep this tab open while playing.</p>
         </div>
         {stage === 'error' && <div className="rounded-lg bg-black/40 border border-rose-400/40 text-rose-100 text-sm p-3">{err}</div>}
         <label className="block text-sm">Your name
@@ -659,7 +693,7 @@ function Online() {
       <div className="text-center">
         <div className="text-xs uppercase tracking-widest text-rose-200/70">Room code</div>
         <div className="text-5xl font-extrabold tracking-[0.3em] text-amber-300 uppercase" style={{ fontFamily: 'Georgia, serif' }}>{pub.code}</div>
-        {isHost && <p className="text-xs text-rose-200/70 mt-2">Share this page with your friends (Contributor access), then give them this code.</p>}
+        {isHost && <p className="text-xs text-rose-200/70 mt-2">Send your friends this page’s link and this code.</p>}
       </div>
       <div className="space-y-2">
         {[0, 1, 2, 3].map(i => {
