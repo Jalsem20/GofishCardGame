@@ -215,7 +215,7 @@ function Avatar({ who, size = 76, active = false, asked = false }) {
   const skin = ['#e2b78e', '#c48e5f', '#d9a273', '#a9744a'][v];
   const bg = ['#6b3b2e', '#3c5a4e', '#5a3a63', '#2f4a6b'][v];
   return (
-    <div className={`rounded-full border-4 overflow-hidden shadow-xl transition-colors ${asked ? 'border-sky-300 animate-pulse' : 'border-amber-400'} ${active && !asked ? 'glow' : ''}`} style={{ width: size, height: size, background: bg }}>
+    <div className={`rounded-full overflow-hidden shadow-xl transition-all duration-300 ${asked ? 'border-4 border-sky-300 animate-pulse' : active ? 'border-[5px] border-amber-300 glow scale-110' : 'border-4 border-[#7b4047] opacity-60 saturate-50'}`} style={{ width: size, height: size, background: bg }}>
       <svg viewBox="0 0 100 100" width="100%" height="100%">
         <circle cx="50" cy="50" r="50" fill={bg} />
         <path d="M14 100 C16 78 34 72 50 72 C66 72 84 78 86 100Z" fill={['#2f3f5e', '#8a2f2f', '#d1a13a', '#4a7a4a'][v]} />
@@ -277,9 +277,9 @@ function Opponent({ idx, view, selectedRank, onAsk, canAct, askedSeat }) {
       <div className="relative" data-seat={idx}>
         <Avatar who={idx} size={small ? 56 : 72} active={active} asked={askedSeat === idx} />
       </div>
-      <div className={`rounded-lg px-3 py-1 text-center leading-tight border max-w-full ${canAsk ? 'bg-amber-300 border-amber-100 text-[#3b171e] animate-pulse' : 'bg-[#3b171e] border-[#7b4047] text-rose-50'}`}>
+      <div className={`rounded-lg px-3 py-1 text-center leading-tight border max-w-full ${canAsk ? 'bg-amber-300 border-amber-100 text-[#3b171e] animate-pulse' : active ? 'bg-amber-400 border-amber-200 text-[#3b171e] shadow-lg' : 'bg-[#3b171e] border-[#7b4047] text-rose-50 opacity-70'}`}>
         <div className="text-sm font-bold truncate">{view.names[idx]}{view.ai[idx] && view.names.length > 0 ? ' 🤖' : ''}</div>
-        <div className="text-[11px] opacity-90">{canAsk ? `Ask for ${plural(selectedRank)}` : active ? (view.ai[idx] ? 'Thinking…' : 'Their turn') : `${n} card${n === 1 ? '' : 's'} · ${bk.length} book${bk.length === 1 ? '' : 's'}`}</div>
+        <div className="text-[11px] opacity-90">{canAsk ? `Ask for ${plural(selectedRank)}` : active ? (view.ai[idx] ? '▶ Thinking…' : '▶ Their turn') : `${n} card${n === 1 ? '' : 's'} · ${bk.length} book${bk.length === 1 ? '' : 's'}`}</div>
       </div>
       <Books list={bk} small />
     </div>
@@ -394,23 +394,22 @@ function Table({ view, onAsk, onAgain, againLabel = 'Play again' }) {
           </div>
         </div>
         {top !== null && <div className="flex justify-center pt-3"><Opponent idx={top} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} /></div>}
-        <div className={`flex flex-col items-center ${top !== null ? 'pt-2' : 'pt-4'}`}>
+        <div className="flex justify-between items-center px-1 sm:px-10 pt-3 flex-1">
+          <div className="flex-1 flex justify-start">{left !== null && <Opponent idx={left} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
+        <div className="flex flex-col items-center shrink-0">
           <div className="relative" data-pond style={{ width: 70, height: 100 }}>
             {[2, 1, 0].map(i => <div key={i} className="absolute" style={{ left: i * 2, top: -i * 2 }}><Back w={66} /></div>)}
             <div className="absolute inset-0 flex items-center justify-center"><span className="rounded-full bg-[#3b171e]/90 border border-amber-300 text-amber-200 text-sm font-bold px-2.5 py-0.5">{deck}</span></div>
           </div>
-          <div className="text-xs font-semibold mt-1 tracking-wide text-rose-100">Pond · draw pile</div>
+          <div className="text-xs font-semibold mt-1 tracking-wide text-rose-100">Pond</div>
         </div>
-
-        <div className="flex justify-between items-start px-2 sm:px-10 pt-3 flex-1">
-          <div>{left !== null && <Opponent idx={left} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
-          <div>{right !== null && <Opponent idx={right} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
+          <div className="flex-1 flex justify-end">{right !== null && <Opponent idx={right} view={view} selectedRank={sel} onAsk={ask} canAct={canAct} askedSeat={bubble ? bubble.seat : null} />}</div>
         </div>
 
         <div className="flex flex-col items-center pb-3 px-2">
           {myTurn && <div className="rounded-lg bg-[#fff6dc] text-[#3b171e] text-xs font-bold px-3 py-1 shadow mb-1 relative after:content-[''] after:absolute after:left-1/2 after:-bottom-1 after:w-2 after:h-2 after:bg-[#fff6dc] after:rotate-45 after:-translate-x-1/2">Your Turn</div>}
           <div data-seat={me}><Avatar who={me} size={72} active={myTurn} asked={!!bubble && bubble.seat === me} /></div>
-          <div className="mt-1 rounded-lg px-4 py-0.5 text-center bg-[#3b171e] border border-[#7b4047] leading-tight">
+          <div className={`mt-2 rounded-lg px-4 py-0.5 text-center border leading-tight transition-colors ${myTurn ? 'bg-amber-400 border-amber-200 text-[#3b171e] shadow-lg' : 'bg-[#3b171e] border-[#7b4047]'}`}>
             <div className="text-sm font-bold">{names[me] === 'You' ? 'You' : `${names[me]} (you)`}</div>
             <div className="text-[11px] opacity-90">{hand.length} cards · {books[me].length} book{books[me].length === 1 ? '' : 's'}</div>
           </div>
