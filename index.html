@@ -527,6 +527,7 @@ function Online() {
   const [stage, setStage] = useState('entry'); // entry | connecting | joined | error
   const [name, setName] = useState('');
   const [codeIn, setCodeIn] = useState('');
+  const [nameEdit, setNameEdit] = useState('');
   const [err, setErr] = useState('');
   const [tick, setTick] = useState(0);
   const bump = () => setTick(x => x + 1);
@@ -562,6 +563,15 @@ function Online() {
     bump(); broadcast();
   }
 
+  function uniqueName(base, skip) { const H = R.current; let nm = base, k = 2; while (H.seats.some((s, i) => i !== skip && s.name === nm)) nm = base + k++; return nm; }
+  function hostRename(peer, raw) {
+    const H = R.current; if (H.phase !== 'lobby') return;
+    const i = H.seats.findIndex(s => s.peer === peer && !s.ai); if (i < 0) return;
+    H.seats[i].name = uniqueName(cleanName(raw, H.seats[i].name), i);
+    if (i === 0) H.name = H.seats[i].name;
+    bump(); broadcast();
+  }
+
   function hostMove(m) {
     const H = R.current; const g = H.g;
     if (H.phase !== 'play' || !g || g.over || m.sameTab) return;
@@ -587,6 +597,7 @@ function Online() {
     H.offs.push(room.on('hello', guard(m => { if (m.sameTab) H.myPeer = m.peer; if (role === 'host') hostHello(m); })));
     if (role === 'host') {
       H.offs.push(room.on('move', guard(hostMove)));
+      H.offs.push(room.on('rename', guard(m => { if (!m.sameTab) hostRename(m.peer, m.data && m.data.name); })));
       H.offs.push(room.onPeers(ch => {
         ch.left.forEach(p => {
           const i = H.seats.findIndex(s => s.peer === p.peer && !s.ai);
@@ -688,6 +699,12 @@ function Online() {
   }
 
   /* lobby */
+  const mySeat = isHost ? pub.seats[0] : (me >= 0 ? pub.seats[me] : null);
+  const saveName = () => {
+    const v = nameEdit.trim(); if (!v) return;
+    if (isHost) hostRename(H.myPeer, v); else H.room.emit('rename', { name: v }).catch(() => {});
+    setNameEdit('');
+  };
   return (
     <div className="max-w-md mx-auto felt rounded-3xl border border-[#7b4047] shadow-2xl p-6 space-y-4">
       <div className="text-center">
@@ -707,6 +724,13 @@ function Online() {
           );
         })}
       </div>
+      {mySeat && (
+        <div className="flex gap-2">
+          <input value={nameEdit} onChange={e => setNameEdit(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveName()} maxLength={12}
+            placeholder={`Your name: ${mySeat.name}`} className="flex-1 min-w-0 rounded-lg bg-[#2a1215] border border-[#7b4047] px-3 py-2 text-sm outline-none focus:border-amber-400" />
+          <button onClick={saveName} className="rounded-full bg-[#fff6dc] text-[#3b171e] font-bold text-sm px-4">Change</button>
+        </div>
+      )}
       {isHost ? (
         <div className="flex gap-2">
           <button onClick={addBot} disabled={pub.seats.length >= 4} className="flex-1 rounded-full border border-amber-400 text-amber-200 font-bold py-2 disabled:opacity-40">Add AI player</button>
